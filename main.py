@@ -1,19 +1,40 @@
-"""Leitura de uma porta serial e armazenamento das leituras em CSV."""
+"""Leitura de uma porta serial e armazenamento das leituras em CSV e PostgreSQL."""
 
 import argparse
 import csv
+import os
 import re
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import serial
 from serial.tools import list_ports
 
+try:
+	import psycopg2
+except ImportError:  # pragma: no cover
+	psycopg2 = None
+
+try:
+	import requests
+except ImportError:  # pragma: no cover
+	requests = None
+
+try:
+	from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+	def load_dotenv(*_args, **_kwargs):
+		return False
+
+
+load_dotenv()
 
 DEFAULT_OUTPUT_DIRECTORY = Path(r"G:\Meu Drive\Estacao_prototype")
 DEFAULT_OUTPUT_FILE = "leituras.csv"
 DEFAULT_BAUDRATE = 9600
 CSV_HEADER = ["data", "hora", "temperatura", "umidade"]
+DB_TABLE_NAME = "leituras"
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -50,6 +71,86 @@ def build_argument_parser() -> argparse.ArgumentParser:
 		help="Le apenas uma linha; util para teste da conexao.",
 	)
 	return parser
+
+
+def normalize_database_dsn(dsn: str) -> str:
+	"""Escapa caracteres especiais na senha/usuario da DSN do PostgreSQL."""
+	dsn = dsn.strip()
+	if not dsn.startswith(("postgresql://", "postgres://")):
+		return dsn
+
+	parsed = urlsplit(dsn)
+	if not parsed.username or parsed.password is None:
+		return dsn
+
+	encoded_user = quote(parsed.username, safe="")
+	encoded_password = quote(parsed.password, safe="")
+	netloc = f"{encoded_user}:{encoded_password}@{parsed.hostname}"
+	if parsed.port:
+		netloc = f"{netloc}:{parsed.port}"
+	return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+
+def get_database_dsn() -> str | None:
+	"""Retorna a string de conexao do PostgreSQL quando houver uma DSN valida."""
+	dsn = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
+	if not dsn:
+		return None
+	dsn = dsn.strip()
+	if dsn.startswith(("http://", "https://")):
+		return None
+	return normalize_database_dsn(dsn)
+
+
+def get_supabase_project_url() -> str | None:
+	"""Retorna a URL do projeto Supabase quando configurada no ambiente."""
+	value = os.getenv("SUPABASE_URL") or os.getenv("SUPABASE_DB_URL")
+	if not value:
+		return None
+	value = value.strip()
+	if value.startswith(("http://", "https://")):
+		return value.rstrip("/")
+	return None
+
+
+def get_supabase_key() -> str | None:
+	"""Retorna a chave public/anon do Supabase configurada no ambiente."""
+	for key_name in ("SUPABASE_KEY", "SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY"):
+		value = os.getenv(key_name)
+		if value and value.strip():
+			return value.strip()
+	return None
+
+
+def ensure_database_table() -> None:
+	"""Cria a tabela do banco se ela ainda nao existir."""
+	dsn = get_database_dsn()
+	if not dsn or psycopg2 is None:
+		return
+
+	try:
+		with psycopg2.connect(dsn) as conn:
+			with conn.cursor() as cursor:
+				cursor.execute(
+					f"""
+					CREATE TABLE IF NOT EXISTS {DB_TABLE_NAME} (
+						id SERIAL PRIMARY KEY,
+						data DATE NOT NULL,
+						hora TIME NOT NULL,
+						temperatura NUMERIC(5,2) NOT NULL,
+						umidade NUMERIC(5,2) NOT NULL,
+						created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+					);
+					"""
+				)
+				cursor.execute(
+					f"""
+					CREATE INDEX IF NOT EXISTS idx_{DB_TABLE_NAME}_data_hora
+					ON {DB_TABLE_NAME} (data, hora);
+					"""
+				)
+	except Exception as error:  # pragma: no cover - falha de infra nao deve quebrar a leitura
+		print(f"Banco de dados indisponivel; gravando apenas localmente. ({error})")
 
 
 def find_available_port() -> str:
@@ -106,6 +207,52 @@ def parse_sensor_reading(data: str) -> tuple[str, str]:
 	return temperature.replace(",", "."), humidity.replace(",", ".")
 
 
+def insert_reading_to_database(current_time: datetime, temperature: str, humidity: str) -> None:
+	"""Insere a leitura no PostgreSQL via DSN ou no Supabase via REST API."""
+	dsn = get_database_dsn()
+	if dsn and psycopg2 is not None:
+		try:
+			with psycopg2.connect(dsn) as conn:
+				with conn.cursor() as cursor:
+					cursor.execute(
+						f"INSERT INTO {DB_TABLE_NAME} (data, hora, temperatura, umidade) VALUES (%s, %s, %s, %s);",
+						(
+							current_time.strftime("%Y-%m-%d"),
+							current_time.strftime("%H:%M:%S"),
+							float(temperature.replace(",", ".")),
+							float(humidity.replace(",", ".")),
+						),
+					)
+		except Exception as error:
+			print(f"Falha ao gravar no banco: {error}")
+		return
+
+	supabase_url = get_supabase_project_url()
+	supabase_key = get_supabase_key()
+	if not supabase_url or not supabase_key or requests is None:
+		return
+
+	payload = [{
+		"data": current_time.strftime("%Y-%m-%d"),
+		"hora": current_time.strftime("%H:%M:%S"),
+		"temperatura": float(temperature.replace(",", ".")),
+		"umidade": float(humidity.replace(",", ".")),
+	}]
+	headers = {
+		"apikey": supabase_key,
+		"Authorization": f"Bearer {supabase_key}",
+		"Content-Type": "application/json",
+		"Accept": "application/json",
+	}
+	url = f"{supabase_url}/rest/v1/{DB_TABLE_NAME}"
+
+	try:
+		response = requests.post(url, json=payload, headers=headers, timeout=10)
+		response.raise_for_status()
+	except Exception as error:
+		print(f"Falha ao gravar no Supabase via REST: {error}")
+
+
 def append_reading(output_file: Path, data: str) -> None:
 	"""Adiciona temperatura e umidade ao CSV com data e hora locais formatadas."""
 	temperature, humidity = parse_sensor_reading(data)
@@ -120,6 +267,7 @@ def append_reading(output_file: Path, data: str) -> None:
 				humidity,
 			]
 		)
+	insert_reading_to_database(current_time, temperature, humidity)
 
 
 def read_serial_data(
@@ -131,6 +279,7 @@ def read_serial_data(
 ) -> None:
 	"""Le linhas da porta serial e grava cada linha recebida no arquivo CSV."""
 	ensure_csv_header(output_file)
+	ensure_database_table()
 
 	with serial.Serial(port_name, baudrate=baudrate, timeout=timeout) as serial_port:
 		print(f"Lendo {port_name} a {baudrate} baud. CSV: {output_file}")
