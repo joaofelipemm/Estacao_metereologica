@@ -1,6 +1,17 @@
 # Estacao_metereologica
 
-Le as linhas enviadas por uma porta serial e grava as leituras em CSV localmente, além de persistir no PostgreSQL/Supabase.
+Le as linhas enviadas por uma porta serial, grava as leituras em CSV localmente e sincroniza os novos registros com o Supabase.
+
+## Organizacao
+
+- `serial_reader.py`: encontra a porta e le as mensagens do sensor.
+- `csv_storage.py`: interpreta as mensagens e grava ou le o CSV.
+- `database_sync.py`: envia somente registros posteriores ao checkpoint.
+- `main.py`: coordena a leitura, o CSV e a sincronizacao.
+- `upload_file.py`: sincroniza manualmente um CSV existente.
+
+O arquivo `ultima_sincronizacao.json` guarda a ultima data e hora confirmada no
+Supabase. Ele so e atualizado depois que todos os lotes forem enviados com sucesso.
 
 ## Instalacao
 
@@ -37,7 +48,7 @@ $env:DATABASE_URL = "postgresql://postgres:senha@db.seu-projeto.supabase.co:5432
 Se a variavel nao estiver definida, o programa continua funcionando e grava apenas no CSV local.
 
 Para enviar um CSV existente ao Supabase via API REST, configure `SUPABASE_URL` e
-`SUPABASE_SERVICE_ROLE_KEY` no arquivo `.env` e execute:
+`SUPABASE_KEY` no arquivo `.env` e execute:
 
 ```powershell
 python upload_file.py caminho\para\leituras.csv
@@ -60,6 +71,12 @@ Para testar a conexao lendo uma unica linha:
 
 ```powershell
 python main.py --porta COM6 --once
+```
+
+Para testar a leitura sem acessar o banco:
+
+```powershell
+python main.py --porta COM6 --once --sem-banco
 ```
 
 Para manter a leitura ativa ate pressionar `Ctrl+C`:
