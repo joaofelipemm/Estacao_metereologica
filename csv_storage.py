@@ -1,35 +1,42 @@
 """Funcoes para interpretar e armazenar leituras no CSV."""
 
 import csv
-import re
 from datetime import datetime
 from pathlib import Path
 
 
-CSV_HEADER = ["data", "hora", "temperatura", "umidade"]
+CSV_HEADER = ["data", "hora", "chuva_acumulada", "taxa_chuva", "temperatura", "umidade"]
 CSV_DATETIME_FORMAT = "%d/%m/%Y %H:%M:%S"
 
 
-def parse_sensor_reading(data: str) -> tuple[str, str]:
-	"""Extrai temperatura e umidade de uma mensagem do sensor."""
-	normalized_data = data.strip().lower().replace(";", ",")
-	named_values = re.findall(
-		r"(?:temperatura|temp)\s*[:=]\s*(-?\d+(?:[.,]\d+)?)|"
-		r"(?:umidade|humidity|hum)\s*[:=]\s*(\d+(?:[.,]\d+)?)",
-		normalized_data,
-	)
-	if named_values:
-		temperature = next((value for value, _ in named_values if value), None)
-		humidity = next((value for _, value in named_values if value), None)
-	else:
-		values = [value.strip() for value in normalized_data.split(",")]
-		if len(values) != 2:
-			raise ValueError("use temperatura,umidade ou temperatura=valor,umidade=valor")
-		temperature, humidity = values
+def parse_sensor_reading(data: str) -> tuple[str, str, str, str, str, str]:
+	"""Extrai a leitura completa do protocolo do sensor: dia, mes, ano, hora, minuto, chuva, temperatura e umidade."""
+	normalized_data = data.strip().replace(";", ",").replace(" ", "")
+	values = [value.strip() for value in normalized_data.split(",")]
+	if len(values) != 9:
+		raise ValueError(
+			"leitura invalida: esperado dia,mes,ano,hora,minuto,chuva_acumulada,taxa_chuva,temperatura,umidade"
+		)
 
-	if temperature is None or humidity is None:
-		raise ValueError("a leitura precisa conter temperatura e umidade")
-	return temperature.replace(",", "."), humidity.replace(",", ".")
+	day, month, year, hour, minute, rain_accumulated, rain_rate, temperature, humidity = values
+	if not all(part for part in [day, month, year, hour, minute, rain_accumulated, rain_rate, temperature, humidity]):
+		raise ValueError("a leitura contem valores vazios")
+
+	reading_date = datetime.strptime(
+		f"{int(day):02d}/{int(month):02d}/{int(year):04d}", "%d/%m/%Y"
+	).strftime("%d/%m/%Y")
+	reading_time = datetime.strptime(
+		f"{int(hour):02d}:{int(minute):02d}:00", "%H:%M:%S"
+	).strftime("%H:%M:%S")
+
+	return (
+		reading_date,
+		reading_time,
+		rain_accumulated.replace(",", "."),
+		rain_rate.replace(",", "."),
+		temperature.replace(",", "."),
+		humidity.replace(",", "."),
+	)
 
 
 def ensure_csv_header(output_file: Path) -> None:
@@ -48,19 +55,21 @@ def ensure_csv_header(output_file: Path) -> None:
 
 def write_reading_to_csv(output_file: Path, data: str) -> datetime:
 	"""Valida uma mensagem, grava a leitura e retorna sua data/hora."""
-	temperature, humidity = parse_sensor_reading(data)
-	reading_time = datetime.now().replace(microsecond=0)
+	reading_date, reading_time, rain_accumulated, rain_rate, temperature, humidity = parse_sensor_reading(data)
+	reading_datetime = datetime.strptime(f"{reading_date} {reading_time}", "%d/%m/%Y %H:%M:%S")
 	ensure_csv_header(output_file)
 	with output_file.open("a", newline="", encoding="utf-8") as csv_file:
 		csv.writer(csv_file).writerow(
 			[
-				reading_time.strftime("%d/%m/%Y"),
-				reading_time.strftime("%H:%M:%S"),
+				reading_date,
+				reading_time,
+				rain_accumulated,
+				rain_rate,
 				temperature,
 				humidity,
 			]
 		)
-	return reading_time
+	return reading_datetime
 
 
 def read_csv_rows_since(
@@ -79,6 +88,8 @@ def read_csv_rows_since(
 				payload = {
 					"data": reading_time.strftime("%Y-%m-%d"),
 					"hora": reading_time.strftime("%H:%M:%S"),
+					"chuva_acumulada": float((row["chuva_acumulada"] or "").replace(",", ".")),
+					"taxa_chuva": float((row["taxa_chuva"] or "").replace(",", ".")),
 					"temperatura": float((row["temperatura"] or "").replace(",", ".")),
 					"umidade": float((row["umidade"] or "").replace(",", ".")),
 				}

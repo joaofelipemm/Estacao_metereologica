@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS leituras (
     id SERIAL PRIMARY KEY,
     data DATE NOT NULL,
     hora TIME NOT NULL,
+    chuva_acumulada NUMERIC(10,3) NOT NULL,
+    taxa_chuva NUMERIC(10,3) NOT NULL,
     temperatura NUMERIC(5,2) NOT NULL,
     umidade NUMERIC(5,2) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -35,6 +37,19 @@ CREATE TABLE IF NOT EXISTS leituras (
 
 CREATE INDEX IF NOT EXISTS idx_leituras_data_hora
 ON leituras (data, hora);
+```
+
+Se a tabela ja foi criada sem as colunas de chuva, atualize-a antes de executar
+o sincronizador:
+
+```sql
+ALTER TABLE leituras
+    ADD COLUMN IF NOT EXISTS chuva_acumulada NUMERIC(10,3) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS taxa_chuva NUMERIC(10,3) NOT NULL DEFAULT 0;
+
+ALTER TABLE leituras
+    ALTER COLUMN chuva_acumulada DROP DEFAULT,
+    ALTER COLUMN taxa_chuva DROP DEFAULT;
 ```
 
 No ambiente, configure uma das variaveis abaixo:
