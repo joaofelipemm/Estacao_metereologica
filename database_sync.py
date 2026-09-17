@@ -12,7 +12,7 @@ from csv_storage import read_csv_rows_since
 
 
 DEFAULT_STATE_FILE = "ultima_sincronizacao.json"
-DEFAULT_TABLE = "leituras"
+DEFAULT_TABLE = os.getenv("SUPABASE_TABLE", "leitura").strip() or "leitura"
 
 
 def build_payloads_for_batch(batch, *, include_rain: bool):

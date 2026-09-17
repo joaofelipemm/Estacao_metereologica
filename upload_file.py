@@ -1,6 +1,7 @@
 """Sincroniza um arquivo CSV com o Supabase."""
 
 import argparse
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -19,7 +20,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
 		default=None,
 		help="Arquivo de checkpoint; por padrao fica ao lado do CSV.",
 	)
-	parser.add_argument("--tabela", default="leituras")
+	parser.add_argument(
+		"--tabela",
+		default=os.getenv("SUPABASE_TABLE", "leitura").strip() or "leitura",
+	)
 	parser.add_argument("--lote", type=int, default=100)
 	return parser
 
